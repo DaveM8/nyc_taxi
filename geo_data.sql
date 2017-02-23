@@ -52,15 +52,33 @@ CREATE TABLE ny_taxi_ad_pickup AS
 	JOIN nyed AS ny_ed_dropoff
 	ON ST_Contains(ny_ed_dropoff.geom_nyed, taxi.dropoff_geom);
 
+    -- only include rows where the total_amount == sum(all other compontens)
+    -- some really expensive taxi rids ~ 900000 get removed by this
+    -- also most on the rows removed have some negative values
+
+CREATE TABLE ny_bad_rows AS
+SELECT
+    *
+FROM  ny_taxi_ad_pickup
+WHERE  total_amount <>  fare_amount + extra + mta_tax + tip_amount + tolls_amount +improvement_surcharge;
+
+CREATE TABLE ny_good_rows AS
+SELECT
+    *
+FROM  ny_taxi_ad_pickup
+WHERE  total_amount = fare_amount + extra + mta_tax + tip_amount + tolls_amount +improvement_surcharge;
+
+-- re run with the cleaned up dataset
     -- extract the month, day and hour from each pickup
     -- datetime
-CREATE TABLE ny_taxi_time AS
+DROP TABLE ny_taxi_time;
+    CREATE TABLE ny_taxi_time AS
 SELECT
     taxi.*
     , EXTRACT(HOUR FROM pickup_datetime) AS pickup_hour
-    , EXTRACT(DAY FROM pickup_datetime) AS pickup_day
+    , TO_CHAR(pickup_datetime, 'D') AS pickup_day
     , EXTRACT(MONTH FROM pickup_datetime) AS pickup_month
-FROM ny_taxi_ad_pickup
+FROM ny_good_rows taxi;
 
 -- create a table with the average amount of fair etc
 -- colected by trips starting en each AD, ED , Day Month, Hour
@@ -72,10 +90,8 @@ SELECT
     , pickup_day
     , pickup_month
     , AVG(total_amount) AS avg_total
-    , stddev_pop(total_amount) AS sd_total
     , SUM(total_amount) AS total_amt
     , AVG(tip_amount) AS avg_tip
-    , STDDEV_POP(total_amount) AS sd_tip
     , SUM(tip_amount) AS total_tip
     , COUNT(*) AS num_trips
 FROM ny_taxi_time AS taxi
@@ -86,14 +102,49 @@ GROUP BY
     , pickup_day
     , pickup_month;
 
--- create a table to make maps with
-DROP TABLE  hourly_fair_per_ed;
+-- get per ride data 
+DROP TABLE ny_taxi_ride_ed;
+CREATE TABLE ny_taxi_ride_ed AS
+SELECT
+    DISTINCT
+    pickup_ad_dist
+    , pickup_ed_dist
+    , pickup_hour
+    , pickup_day
+    , CAST(total_amt AS NUMERIC) / num_trips AS avg_amt_per_trip
+    , CAST(total_tip AS NUMERIC) / num_trips AS avg_tip_per_trip
+    , num_trips
+FROM
+(
+SELECT
+    pickup_ad_dist
+    , pickup_ed_dist
+    , pickup_hour
+    , pickup_day
+    , SUM(total_amount) AS total_amt
+    , SUM(tip_amount) AS total_tip
+    , COUNT(*) AS num_trips
+FROM ny_taxi_time AS taxi
+GROUP BY
+    pickup_ad_dist
+    , pickup_ed_dist
+    , pickup_hour
+    , pickup_day
+    )sub;
+
+GROUP BY
+    pickup_ed_dist
+    , geom_nyed
+
+-- tables with geom to create maps :(sadly these tables take up alot
+-- of disk space ~ 6GB ):
+DROP TABLE hourly_fair_per_ed;
 CREATE TABLE hourly_fair_per_ed AS
 SELECT
     pickup_ed_dist
     , geom_nyed
-    , AVG(hourly_fair) AS avg_fair_per_hour
-    , AVG(hourly_tip) AS avg_tip_per_hour
+    , AVG(hourly_fair) AS avg_amt_per_hour
+    , AVG(hourly_tip)  AS avg_tip_per_hour
     , AVG(num_hourly_fair) AS avg_num_fair_per_hour
 FROM
 (
@@ -106,21 +157,41 @@ SELECT
     , COUNT(*) AS num_hourly_fair
 FROM nyed AS ed
     LEFT
-    JOIN ny_taxi_ad_pickup AS pickup
+    JOIN ny_good_rows AS pickup
     ON ed.electdist = pickup.pickup_ed_dist
--- this is a wrong value because
--- it is a 3.5mile trip that costs 989970.39
--- and also the tip+fair+other_charges do not add to total_amount
-WHERE total_amount <> 989970.39
 GROUP BY pickup_ed_dist
     , geom_nyed
     , pickup_hour
     )sub
-GROUP BY pickup_ed_dist
-    , geom_nyed;
-
-select
+GROUP BY
     pickup_ed_dist
-    ,avg_fair_per_hour / avg_num_fair_per_hour AS price_per_fair
-    ,avg_tip_per_hour / avg_num_fair_per_hour AS tip_per_fair
-FROM hourly_fair_per_ed;
+    , geom_nyed
+
+-- I have run out of disk space so I cannot run this qurey :(
+CREATE TABLE hourly_fair_per_ad AS
+SELECT
+    pickup_ad_dist
+    , geom_nyad
+    , AVG(hourly_fair) AS avg_amt_per_hour
+    , AVG(hourly_tip)  AS avg_tip_per_hour
+    , AVG(num_hourly_fair) AS avg_num_fair_per_hour
+FROM
+(
+SELECT
+    pickup_ad_dist
+    , geom_nyad
+    , EXTRACT(HOUR FROM pickup_datetime) AS pickup_hour
+    , SUM(total_amount) AS hourly_fair
+    , SUM(tip_amount) AS hourly_tip
+    , COUNT(*) AS num_hourly_fair
+FROM nyad AS ad
+    LEFT
+    JOIN ny_good_rows AS pickup
+    ON ad.assemdist = pickup.pickup_ad_dist
+GROUP BY pickup_ad_dist
+    , geom_nyad
+    , pickup_hour
+    )sub
+GROUP BY
+    pickup_ad_dist
+    , geom_nyadp;
