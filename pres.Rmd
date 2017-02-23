@@ -1,0 +1,108 @@
+---
+title: "New York City Taxis"
+author: David Morrisroe
+date: 23 February 2017
+output: ioslides_presentation
+---
+
+
+## Exploring The Data
+
+* Load into R
+      + Fails to load as the dataset is 3.2 GB.
+      + File to big to proccess on my laptop in R.
+* Postgres to the rescue
+    + Postgres on my laptop can easly handle the file
+    + With the added bonus of PostGIS to process the geospatial data
+
+* While the original 19MM rows are to much for R
+    + First proccessing the data in postgres can reduce the number of rows to < 1MM
+
+## Hypothesis
+<div class="columns-2">
+* There are better places in the city to work on a given day time.
+    + Divide the city into geographical segments and search for the optimal place to work given the time of day, and day of week.
+
+    ```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width= 4, fig.height=4}
+
+require(ggmap)
+require(maptools)
+require(RColorBrewer)
+require(gpclib)
+require(dplyr)
+
+## load the shape file
+new_ed <- readShapePoly("new_ed/new_ed.shp")
+
+## convert it to a data frame
+points <- fortify(new_ed, region = 'PICKUP_ED_')
+
+## extract the ids
+ed_ids <- as.data.frame(new_ed@data$PICKUP_ED_)
+names(ed_ids) <- "ed_id"
+## extract the data points
+new_ids <- cbind(ed_ids, as.data.frame(new_ed@data$AVG_AMT_PE))
+new_ids <- cbind(new_ids, as.data.frame(new_ed@data$AVG_NUM_FA))
+new_ids <- cbind(new_ids, as.data.frame(new_ed@data$AVG_TIP_PE))
+## shapefiles have a max name length of 10 so give more discriptive names
+names(new_ids) <- c("ed_id", "avg_amp_per_hour", "avg_num_fares_per_hour", "avg_tip_per_hour")
+
+## bin the values to make cleared maps
+new_ids <- new_ids %>% mutate(bin_tips = ntile(avg_tip_per_hour, 10))
+new_ids <- new_ids %>% mutate(bin_fares = ntile(avg_num_fares_per_hour, 10))
+new_ids <- new_ids %>% mutate(bin_amt = ntile(avg_amp_per_hour, 10))
+## convert to factors 
+new_ids$bin_tips <- as.factor(new_ids$bin_tips)
+new_ids$bin_fares <- as.factor(new_ids$bin_fares)
+new_ids$bin_amt <- as.factor(new_ids$bin_amt)
+
+## join the shapefile polygons with the usage data
+map_data <- merge(points, new_ids, by.x="id", by.y="ed_id")
+## grab a map fo Manhattan from Google Maps
+ny_map <- get_map("Brooklyn", zoom=11)
+
+
+## now draw some maps
+ggmap(ny_map, extent="device")+
+    geom_polygon(aes(x=long, y=lat, group=group, fill=bin_fares, alpha=0.7), data=map_data) +
+    ggtitle("Most Fares")
+
+    ```
+
+	<\div>
+
+
+		
+## Method 
+* Election District
+    + I got a shapefile of NYC's Election Districts which splits the city into ~5500 geographical areas.
+    +  Use a geospatial query to map the pickup coordanits to the districts.
+
+* Use a simple aggregation functions to reduce the number of rows.
+	+ Pickup ED
+	+ Hour
+	+ Day of Week
+	+ average charge per fare
+	+ number of trips
+
+## Results
+<div class="centered">
+```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width= 9, fig.height=5}
+ 
+ggmap(ny_map, extent="device")+
+    geom_polygon(aes(x=long, y=lat, group=group, fill=bin_amt, alpha=0.6), data=map_data) +
+    ggtitle("Where New York Taxi Drivers Make The Most Money")
+
+
+```
+<\div>
+
+## Recommendations
+
+* Work In Brooklyn or JFK because you will get longest Fares
+
+  * The month of the year has no impact on the average number of fares per hour
+
+  * 01:00 AM on A Sunday is the busiest time of the week
+
+  * All code on github.com/davem8/nyc-taxi
